@@ -63,11 +63,16 @@ local function update_confirm_button(element, player, researched_technologies)
 		element.style = 'confirm_button_without_tooltip'
 		element.caption = {'turd.select'}
 	elseif selected_upgrade == element.tags.sub_tech_name then
-		element.style = 'confirm_button_without_tooltip_unhoverable'
-		element.caption = {'turd.selected'}
+		if global.turd_reset_remaining > 0 then
+			element.style = 'confirm_button_without_tooltip'
+			element.caption = {'turd.unselect'}
+		else
+			element.style = 'confirm_button_without_tooltip_unhoverable'
+			element.caption = {'turd.selected'}
+		end
 	else
 		element.style = 'red_back_button_unhoverable'
-		element.caption = {'turd.unavalible'}
+		element.caption = {'turd.unavailable'}
 	end
 end
 
@@ -76,6 +81,9 @@ local function create_turd_page(gui, player)
     textbox_frame.style.horizontally_stretchable = true
 	local label = textbox_frame.add{type = 'label', caption = {'pywiki-descriptions.turd'}, style = 'label_with_left_padding'}
 	label.style.single_line = false
+
+	local reset_label = textbox_frame.add{type = 'label', caption = {'turd.resets-left', global.turd_reset_remaining}, style = 'label_with_left_padding'}
+	reset_label.style.single_line = false
 
 	local py_select_view = textbox_frame.add{type = 'drop-down', name = 'py_select_view', items = views, selected_index = global.turd_views[player.index] or 1}
 	py_select_view.style.width = 200
@@ -292,30 +300,32 @@ local function find_all_assembling_machines(force)
 	return assembling_machine_list
 end
 
+local function apply_turd_bonus(force, master_tech_name, tech_upgrade, assembling_machine_list)
+	local turd_bonuses = global.turd_bonuses[force.index] or {}
+	local selection = turd_bonuses[master_tech_name] or NOT_SELECTED
+	if selection == NOT_SELECTED then return end
+	local sub_tech = tech_upgrade.sub_techs[selection]
+
+	local recipes = force.recipes
+	local item_prototypes = game.item_prototypes
+	for _, effect in pairs(sub_tech.effects) do
+		if effect.type == 'unlock-recipe' then
+			recipes[effect.recipe].enabled = true
+		elseif effect.type == 'recipe-replacement' then
+			local old, new = recipes[effect.old], recipes[effect.new]
+			if old.enabled then recipe_replacement(old, new, force, assembling_machine_list) end
+		elseif effect.type == 'module-effects' then
+			module_effects(tech_upgrade, sub_tech, assembling_machine_list, force, item_prototypes)
+		end
+	end
+end
+
 local function reapply_turd_bonuses(force)
 	global.turd_unlocked_modules[force.index] = {}
-	local recipes = force.recipes
-	local turd_bonuses = global.turd_bonuses[force.index] or {}
 	local assembling_machine_list = find_all_assembling_machines(force)
-	local item_prototypes = game.item_prototypes
 
 	for master_tech_name, tech_upgrade in pairs(tech_upgrades) do
-		local selection = turd_bonuses[master_tech_name] or NOT_SELECTED
-		if selection == NOT_SELECTED then goto continue end
-		local sub_tech = tech_upgrade.sub_techs[selection]
-
-		for _, effect in pairs(sub_tech.effects) do
-			if effect.type == 'unlock-recipe' then
-				recipes[effect.recipe].enabled = true
-			elseif effect.type == 'recipe-replacement' then
-				local old, new = recipes[effect.old], recipes[effect.new]
-				if old.enabled then recipe_replacement(old, new, force, assembling_machine_list) end
-			elseif effect.type == 'module-effects' then
-				module_effects(tech_upgrade, sub_tech, assembling_machine_list, force, item_prototypes)
-			end
-		end
-
-		::continue::
+		apply_turd_bonus(force, master_tech_name, tech_upgrade, assembling_machine_list)
 	end
 end
 
@@ -346,7 +356,7 @@ gui_events[defines.events.on_gui_click]['py_turd_confirm_button'] = function(eve
 		update_confirm_button(confirm_button, player)
 	end
 
-	reapply_turd_bonuses(force)
+	apply_turd_bonus(force, master_tech_name, tech_upgrades[master_tech_name], find_all_assembling_machines(force))
 end
 
 Turd.events.on_init = function()
@@ -354,9 +364,10 @@ Turd.events.on_init = function()
 	global.turd_beaconed_machines = global.turd_beaconed_machines or {}
 	global.turd_unlocked_modules = global.turd_unlocked_modules or {}
 	global.turd_views = global.turd_views or {}
+	global.turd_reset_remaining = 0
 end
 
-local function respec(force)
+local function respec_all(force)
 	local assembling_machine_list = find_all_assembling_machines(force)
 	local recipes = force.recipes
 	for _, tech_upgrade in pairs(tech_upgrades) do
@@ -395,8 +406,11 @@ local function on_researched(event)
 	if tech_upgrades[technology.name] then
 		global.turd_bonuses[force.index] = global.turd_bonuses[force.index] or {}
 		global.turd_bonuses[force.index][technology.name] = NOT_SELECTED
+	elseif starts_with(technology.name, 'turd-partial-respec') and game.tick ~= 0 then
+		global.turd_reset_remaining = global.turd_reset_remaining + 1
+		return
 	elseif starts_with(technology.name, 'turd-respec') and game.tick ~= 0 then
-		respec(force)
+		respec_all(force)
 		return
 	end
 
@@ -410,8 +424,6 @@ local function on_unresearched(event)
 	if tech_upgrades[technology.name] then
 		force.reset_technology_effects()
 	end
-
-	if starts_with(technology.name, 'turd-respec') then on_researched(event) end
 end
 
 Turd.events.on_research_finished = on_researched
